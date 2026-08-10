@@ -1,0 +1,159 @@
+"""
+CLI entry point.
+
+Usage:
+  python -m router_eval.cli run \
+      --use-cases configs/use_cases.example.yaml \
+      --models claude-sonnet-5,gemini-flash,gpt-4o-mini \
+      --max-spend 2.00
+
+  python -m router_eval.cli run --use-cases ... --models ... --dry-run
+
+Design choices:
+
+- --models takes ANY comma-separated list of keys from models.yaml, not a
+  hardcoded Gemini-vs-Claude pair. Three, four, five models can be compared
+  in one run -- the decision engine currently reasons pairwise (see its
+  docstring) so with 3+ models it evaluates the top two by quality first, a
+  known simplification documented there rather than hidden.
+
+- --dry-run estimates cost from each provider's own tokenizer (via
+  count_tokens) BEFORE any real call is made, so a person can see "this
+  will cost about $X" and back out before spending anything.
+
+- --max-spend is a hard stop enforced mid-run, not just at the start.
+  A dry-run estimate can be wrong if a model responds much longer than
+  expected -- the running total is checked after every judged trial.
+"""
+
+import argparse
+import json
+import os
+import statistics
+
+from .model_registry import ModelRegistry
+from .use_case_loader import load_use_cases
+from .harness import run_use_case_adaptive, aggregate
+from .decision_engine import recommend
+
+
+def build_model_call_fn(provider):
+    def _call(model_key, system_prompt, user_input):
+        result = provider.generate(system_prompt, user_input)
+        return result.text, result.latency_ms, result.input_tokens, result.output_tokens
+    return _call
+
+
+def build_judge_fn(judge_provider):
+    def _judge(prompt: str) -> str:
+        result = judge_provider.generate(
+            system_prompt="You are a strict, consistent rubric scorer.",
+            user_input=prompt,
+        )
+        return result.text
+    return _judge
+
+
+def estimate_dry_run_cost(use_case, model_keys, registry, providers, n_trials_estimate=5):
+    total = 0.0
+    for mk in model_keys:
+        spec = registry.get(mk)
+        provider = providers[mk]
+        for sample in use_case.sample_inputs:
+            in_tok = provider.count_tokens(use_case.system_prompt + sample)
+            out_tok_estimate = 200  # rough placeholder; refine per use case if you have historical output lengths
+            total += spec.cost(in_tok, out_tok_estimate) * n_trials_estimate
+    return total
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Model routing evaluation harness")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    run_p = sub.add_parser("run")
+    run_p.add_argument("--use-cases", required=True, help="Path to use_cases YAML")
+    run_p.add_argument("--models-config", default="configs/models.yaml")
+    run_p.add_argument("--models", required=True, help="Comma-separated model keys, e.g. claude-sonnet-5,gemini-flash")
+    run_p.add_argument("--judge-model", default=None, help="Model key for the judge. Defaults to a model NOT in --models, to avoid self-preference bias.")
+    run_p.add_argument("--max-spend", type=float, default=2.00)
+    run_p.add_argument("--dry-run", action="store_true")
+    run_p.add_argument("--out", default="results/report.md")
+
+    args = parser.parse_args()
+
+    registry = ModelRegistry(args.models_config)
+    use_cases = load_use_cases(args.use_cases)
+    model_keys = [m.strip() for m in args.models.split(",")]
+
+    for mk in model_keys:
+        registry.get(mk)  # raises a clear KeyError early if a typo'd model key was passed
+
+    judge_key = args.judge_model or next((k for k in registry.keys() if k not in model_keys), model_keys[0])
+    if judge_key in model_keys:
+        print(f"Warning: judge model '{judge_key}' is also a candidate being scored -- "
+              f"self-preference bias is possible. Pass --judge-model to use a separate model.")
+
+    providers = {mk: registry.get(mk).build_provider() for mk in set(model_keys + [judge_key])}
+    judge_fn = build_judge_fn(providers[judge_key])
+
+    if args.dry_run:
+        total = 0.0
+        for uc in use_cases.values():
+            total += estimate_dry_run_cost(uc, model_keys, registry, providers)
+        print(f"Estimated cost for this run: ${total:.4f} (rough — actual output length varies)")
+        return
+
+    spent = [0.0]  # mutable box so the closure below can update it
+
+    def call_fn(model_key, system_prompt, user_input):
+        result = providers[model_key].generate(system_prompt, user_input)
+        spent[0] += registry.get(model_key).cost(result.input_tokens, result.output_tokens)
+        if spent[0] > args.max_spend:
+            raise RuntimeError(
+                f"Spend cap exceeded: ${spent[0]:.4f} > ${args.max_spend:.2f}. "
+                f"Run halted mid-evaluation -- partial results are not written."
+            )
+        return result.text, result.latency_ms, result.input_tokens, result.output_tokens
+
+    all_recs, all_aggs = {}, {}
+    for uc_key, uc in use_cases.items():
+        raw, trials = run_use_case_adaptive(uc, model_keys, call_fn, judge_fn)
+        aggs = {mk: aggregate(uc, mk, r, model_spec=registry.get(mk)) for mk, r in raw.items() if r}
+        rec = recommend(uc, aggs)
+        all_recs[uc_key] = rec
+        all_aggs[uc_key] = aggs
+        print(f"{uc_key}: {trials} trials/model, recommendation = {rec.winner} ({rec.confidence})")
+
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    with open(args.out, "w") as f:
+        f.write(render_report(all_recs, all_aggs, use_cases, spent[0]))
+    print(f"\nTotal spend: ${spent[0]:.4f}")
+    print(f"Report written to {args.out}")
+
+
+def render_report(all_recs, all_aggs, use_cases, total_spend):
+    lines = ["# Model Router — Evaluation Report", "",
+             f"Total spend this run: ${total_spend:.4f}", ""]
+    for uc_key, rec in all_recs.items():
+        uc = use_cases[uc_key]
+        lines += [f"## {uc_key}", f"_{uc.description.strip()}_", "",
+                   f"**Recommendation: `{rec.winner or 'NO MODEL CLEARS FLOOR'}`** (confidence: {rec.confidence})", ""]
+        lines.append("| model | mean quality | weakest criterion | p50 lat (ms) | p95 lat (ms) | mean cost/call |")
+        lines.append("|---|---|---|---|---|---|")
+        for mk, agg in all_aggs[uc_key].items():
+            crit, val = agg.min_criterion_mean
+            flag = "OK" if agg.quality_floor_met else "BELOW FLOOR"
+            lines.append(f"| {mk} | {agg.mean_quality:.2f} | {crit}={val:.2f} ({flag}) | "
+                          f"{agg.p50_latency_ms:.0f} | {agg.p95_latency_ms:.0f} | ${agg.mean_cost_usd:.5f} |")
+        lines.append("")
+        lines.append("**Reasoning:**")
+        for step in rec.reasoning:
+            lines.append(f"- {step}")
+        if rec.fallback_note:
+            lines.append(f"- ⚠️ {rec.fallback_note}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    main()

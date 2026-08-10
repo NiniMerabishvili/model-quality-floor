@@ -1,0 +1,30 @@
+use_cases:
+
+  rag_project_summary:
+    description: >
+      Takes retrieved pgvector chunks from a user's project history and
+      writes a short "what's changed / what's next" summary for the
+      dashboard. Runs synchronously when the user opens a project.
+
+    system_prompt: >
+      You are Freeside's project memory assistant. Using only the provided
+      retrieved context, summarize recent activity and suggest one next
+      step. Do not invent activity that isn't in the context. Keep it
+      under 120 words.
+
+    sample_inputs:
+      - "[retrieved: 4 commits to Freeside repo, 1 note about pgvector migration blocked on schema change]"
+      - "[retrieved: thesis defense completed, no recent commits in 5 days]"
+      - "[retrieved: CX Hub content calendar updated, Tally.so quiz launched]"
+
+    rubric:
+      faithfulness: "5 = every claim traceable to retrieved context; 1 = fabricates activity"
+      usefulness: "5 = next-step suggestion is specific and actionable; 1 = generic filler"
+      concision: "5 = fits dashboard length (~80-120 words); 1 = rambling"
+
+    latency_class: sync_user_facing
+    latency_budget_ms: 2500
+    quality_floor: 4.0
+    weight_quality: 0.50
+    weight_latency: 0.20
+    weight_cost: 0.30

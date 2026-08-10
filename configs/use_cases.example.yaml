@@ -1,0 +1,35 @@
+# Use case definitions — this is the file YOU edit to describe YOUR product's
+# call sites. The one below (task_triage) is a real Freeside example, kept as
+# a template. Copy the block, rename the key, and fill in your own rubric.
+#
+# weight_quality + weight_latency + weight_cost should sum to ~1.0 per use case.
+# quality_floor is the minimum acceptable mean score (1-5) on the WEAKEST
+# rubric criterion — not the average across criteria.
+
+use_cases:
+
+  task_triage:
+    description: >
+      Classify an incoming user task into a priority bucket and extract
+      structured metadata. Runs synchronously on every task added — highest
+      volume call in the product.
+    system_prompt: >
+      You are a task classifier. Given a raw task description, return the
+      priority bucket, project association, and an effort estimate.
+      Respond in the required JSON schema only.
+    sample_inputs:
+      - "finish the Agency content calendar before Friday standup"
+      - "reply to Aker AI about the interview slot"
+      - "someday: rebuild the onboarding flow with better empty states"
+    rubric:
+      schema_validity: "5 = valid JSON matching schema every time; 1 = frequently malformed"
+      classification_accuracy: "5 = bucket/project match human labels; 1 = arbitrary"
+      instruction_adherence: "5 = no extra commentary outside the JSON; 1 = wraps output in prose"
+    latency_class: sync_user_facing
+    latency_budget_ms: 800
+    quality_floor: 4.0
+    weight_quality: 0.35
+    weight_latency: 0.40
+    weight_cost: 0.25
+
+  # --- add your own use cases below, same shape as above ---
