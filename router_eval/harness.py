@@ -18,10 +18,30 @@ needed (see decision_engine.py's own confidence reporting, which still
 applies on top of this).
 """
 
+import logging
 import statistics
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from .judge import score_response
+from .judge import RubricScore, score_response
+from .model_registry import ModelSpec
+from .retry import RateLimitExhaustedError
+from .use_case_loader import UseCase
+
+logger = logging.getLogger(__name__)
+
+# model_call_fn signature: (model_key, system_prompt, user_input) ->
+#   (output_text, latency_ms, input_tokens, output_tokens)
+ModelCallFn = Callable[[str, str, str], tuple[str, float, int, int]]
+JudgeFn = Callable[[str], str]
+
+# Defaults for run_use_case_adaptive's adaptive-stopping schedule -- named so
+# the CLI/tests can reference the same values run_use_case_adaptive falls
+# back to, rather than repeating the bare numbers wherever they're overridden.
+DEFAULT_MIN_TRIALS = 3
+DEFAULT_MAX_TRIALS = 10
+DEFAULT_ROUND_SIZE = 2
+DEFAULT_STOP_THRESHOLD = 1.0
 
 
 @dataclass
@@ -32,7 +52,7 @@ class CallResult:
     latency_ms: float
     input_tokens: int
     output_tokens: int
-    quality: "RubricScore"
+    quality: RubricScore
 
 
 @dataclass
@@ -40,7 +60,7 @@ class ModelAggregate:
     model_key: str
     n_trials: int
     mean_quality: float
-    min_criterion_mean: tuple
+    min_criterion_mean: tuple[str, float]
     quality_stdev: float
     p50_latency_ms: float
     p95_latency_ms: float
@@ -49,16 +69,22 @@ class ModelAggregate:
     quality_floor_met: bool
 
 
-def percentile(values, pct):
+def percentile(values: list[float], pct: float) -> float:
     s = sorted(values)
     idx = min(len(s) - 1, int(round(pct / 100 * (len(s) - 1))))
     return s[idx]
 
 
 def run_use_case_adaptive(
-    use_case, model_keys, model_call_fn, judge_fn,
-    min_trials=3, max_trials=10, round_size=2, stop_threshold=1.0,
-):
+    use_case: UseCase,
+    model_keys: list[str],
+    model_call_fn: ModelCallFn,
+    judge_fn: JudgeFn,
+    min_trials: int = DEFAULT_MIN_TRIALS,
+    max_trials: int = DEFAULT_MAX_TRIALS,
+    round_size: int = DEFAULT_ROUND_SIZE,
+    stop_threshold: float = DEFAULT_STOP_THRESHOLD,
+) -> tuple[dict[str, list[CallResult]], dict[str, int], dict[str, int]]:
     """
     model_call_fn: callable(model_key, system_prompt, user_input) ->
         (output_text, latency_ms, input_tokens, output_tokens)
@@ -67,19 +93,39 @@ def run_use_case_adaptive(
     only. Cost is calculated afterward in aggregate(), once per finished
     trial set, via the model_spec passed there.
 
-    Returns: (raw_results: dict[model_key -> list[CallResult]], trials_run: dict[model_key -> int])
+    Returns: (raw_results: dict[model_key -> list[CallResult]],
+              trials_run: dict[model_key -> int],
+              skipped: dict[model_key -> int]) -- skipped counts trials
+    abandoned because a provider call's rate-limit retries were exhausted
+    (see retry.py). Those trials are logged and left out of raw_results
+    entirely rather than crashing the run; every other exception (a judge
+    JSON-parse failure, an auth error, the spend cap, etc.) still
+    propagates unchanged and halts the run, per providers/base.py's
+    "don't silently fail" contract -- only rate-limit exhaustion gets this
+    skip-and-continue treatment.
     """
-    raw_results = {mk: [] for mk in model_keys}
+    raw_results: dict[str, list[CallResult]] = {mk: [] for mk in model_keys}
+    skipped: dict[str, int] = {mk: 0 for mk in model_keys}
     sample_inputs = use_case.sample_inputs
 
-    def run_round(n):
+    def run_round(n: int) -> None:
         for model_key in model_keys:
             for _ in range(n):
                 for sample_input in sample_inputs:
-                    output, latency_ms, in_tok, out_tok = model_call_fn(
-                        model_key, use_case.system_prompt, sample_input
-                    )
-                    quality = score_response(use_case, output, judge_fn)
+                    try:
+                        output, latency_ms, in_tok, out_tok = model_call_fn(
+                            model_key, use_case.system_prompt, sample_input
+                        )
+                        quality = score_response(use_case, output, judge_fn)
+                    except RateLimitExhaustedError as e:
+                        skipped[model_key] += 1
+                        logger.warning(
+                            "Skipping one trial for model '%s' on use case '%s' -- %s",
+                            model_key,
+                            use_case.key,
+                            e,
+                        )
+                        continue
                     raw_results[model_key].append(
                         CallResult(model_key, sample_input, output, latency_ms, in_tok, out_tok, quality)
                     )
@@ -100,16 +146,19 @@ def run_use_case_adaptive(
         run_round(round_size)
         trials_run += round_size
 
-    return raw_results, {mk: len(r) // max(1, len(sample_inputs)) for mk, r in raw_results.items()}
+    trials_by_model = {mk: len(r) // max(1, len(sample_inputs)) for mk, r in raw_results.items()}
+    return raw_results, trials_by_model, skipped
 
 
-def aggregate(use_case, model_key, results: list, model_spec=None) -> ModelAggregate:
+def aggregate(
+    use_case: UseCase,
+    model_key: str,
+    results: list[CallResult],
+    model_spec: ModelSpec | None = None,
+) -> ModelAggregate:
     quality_means = [r.quality.mean() for r in results]
     latencies = [r.latency_ms for r in results]
-    costs = (
-        [model_spec.cost(r.input_tokens, r.output_tokens) for r in results]
-        if model_spec else [0.0] * len(results)
-    )
+    costs = [model_spec.cost(r.input_tokens, r.output_tokens) for r in results] if model_spec else [0.0] * len(results)
 
     criteria = results[0].quality.scores.keys()
     per_criterion_means = {c: statistics.mean(r.quality.scores[c] for r in results) for c in criteria}

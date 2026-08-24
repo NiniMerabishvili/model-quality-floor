@@ -108,5 +108,21 @@ defensible tool), not a workaround.
   available; output length is still a rough placeholder since it can't be
   known before the call happens.
 
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+
+pytest                    # tests/ covers decision_engine.py and judge.py
+ruff check .              # lint
+black --check .           # formatting
+mypy router_eval          # type-check the package (not tests/, which uses
+                           # duck-typed fakes on purpose — see tests/conftest.py)
+```
+
+Test coverage is intentionally scoped to `decision_engine.py` and `judge.py`
+for now — the two modules with the most non-obvious logic (quality-floor
+gating, tie-breaking, JSON-parse retries). `harness.py`, `cli.py`, and the
+provider files aren't covered yet.
 
 By Nini Merabishvili

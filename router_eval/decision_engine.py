@@ -25,21 +25,35 @@ burnout explanation). Two things fix that:
 
 from dataclasses import dataclass
 
+from .harness import ModelAggregate
+from .use_case_loader import UseCase
+
+# Below this many trials for the narrower of the two candidates, a
+# recommendation is never reported as "high" or "moderate" confidence,
+# regardless of how clear the quality gap looks -- too few samples to trust.
+MIN_TRIALS_FOR_CONFIDENT_RECOMMENDATION = 5
+
+# A real (non-tied) quality lead is still overridden in favor of the cheaper
+# model when the use case barely cares about quality (weight_quality below
+# this) AND the quality leader costs at least this many times more per call.
+LOW_QUALITY_WEIGHT_THRESHOLD = 0.4
+COST_PREMIUM_OVERRIDE_MULTIPLIER = 1.5
+
 
 @dataclass
 class Recommendation:
     use_case_key: str
-    winner: str | None          # None if no model clears the floor
-    reasoning: list             # ordered list of the actual reasoning steps
-    confidence: str             # "high" | "moderate" | "low -- needs more trials"
+    winner: str | None  # None if no model clears the floor
+    reasoning: list[str]  # ordered list of the actual reasoning steps
+    confidence: str  # "high" | "moderate" | "low -- needs more trials"
     fallback_note: str = ""
 
 
-def recommend(use_case, aggregates: dict):
+def recommend(use_case: UseCase, aggregates: dict[str, ModelAggregate]) -> Recommendation:
     """
     aggregates: dict[model_key -> ModelAggregate] for this use case.
     """
-    reasoning = []
+    reasoning: list[str] = []
 
     # Step 1: gate on quality floor
     eligible = {k: a for k, a in aggregates.items() if a.quality_floor_met}
@@ -56,17 +70,19 @@ def recommend(use_case, aggregates: dict):
         return Recommendation(
             use_case_key=use_case.key,
             winner=None,
-            reasoning=reasoning + ["No candidate model clears the quality floor. "
-                                    "Do not route this use case automatically -- "
-                                    "escalate for prompt revision or manual review."],
+            reasoning=reasoning
+            + [
+                "No candidate model clears the quality floor. "
+                "Do not route this use case automatically -- "
+                "escalate for prompt revision or manual review."
+            ],
             confidence="high",
         )
 
     if len(eligible) == 1:
         only_key = next(iter(eligible))
         reasoning.append(f"Only {only_key} clears the quality floor; selected by elimination.")
-        return Recommendation(use_case_key=use_case.key, winner=only_key,
-                               reasoning=reasoning, confidence="high")
+        return Recommendation(use_case_key=use_case.key, winner=only_key, reasoning=reasoning, confidence="high")
 
     # Step 2: among eligible models, check whether quality is statistically
     # distinguishable. Cheap heuristic (not a full significance test, but
@@ -95,7 +111,10 @@ def recommend(use_case, aggregates: dict):
         # even with a quality lead, check whether it's worth the cost/latency
         # premium given this use case's weighting -- a senior router doesn't
         # auto-pick "highest quality" if the use case barely weights quality
-        if use_case.weight_quality < 0.4 and better.mean_cost_usd > worse.mean_cost_usd * 1.5:
+        if (
+            use_case.weight_quality < LOW_QUALITY_WEIGHT_THRESHOLD
+            and better.mean_cost_usd > worse.mean_cost_usd * COST_PREMIUM_OVERRIDE_MULTIPLIER
+        ):
             reasoning.append(
                 f"But this use case only weights quality at {use_case.weight_quality:.2f} "
                 f"and {better.model_key} costs {better.mean_cost_usd / worse.mean_cost_usd:.1f}x "
@@ -106,8 +125,11 @@ def recommend(use_case, aggregates: dict):
             winner = better.model_key
 
     n_min = min(a.n_trials, b.n_trials)
-    confidence = "high" if n_min >= 5 and not quality_tied else (
-        "moderate" if n_min >= 5 else "low -- needs more trials"
+    has_enough_trials = n_min >= MIN_TRIALS_FOR_CONFIDENT_RECOMMENDATION
+    confidence = (
+        "high"
+        if has_enough_trials and not quality_tied
+        else ("moderate" if has_enough_trials else "low -- needs more trials")
     )
 
     return Recommendation(
@@ -116,22 +138,22 @@ def recommend(use_case, aggregates: dict):
         reasoning=reasoning,
         confidence=confidence,
         fallback_note=(
-            "" if confidence != "low -- needs more trials" else
-            f"Only {n_min} trials per model -- treat this as directional, "
+            ""
+            if confidence != "low -- needs more trials"
+            else f"Only {n_min} trials per model -- treat this as directional, "
             f"not a final routing decision. Re-run with n_trials>=10 before shipping."
         ),
     )
 
 
-def _pick_on_latency_then_cost(use_case, a, b, reasoning):
+def _pick_on_latency_then_cost(use_case: UseCase, a: ModelAggregate, b: ModelAggregate, reasoning: list[str]) -> str:
     if use_case.latency_class == "sync_user_facing":
         a_ok = a.p95_latency_ms <= use_case.latency_budget_ms
         b_ok = b.p95_latency_ms <= use_case.latency_budget_ms
         if a_ok != b_ok:
             winner = a.model_key if a_ok else b.model_key
             reasoning.append(
-                f"Only {winner} meets the {use_case.latency_budget_ms}ms p95 budget "
-                f"for this sync call."
+                f"Only {winner} meets the {use_case.latency_budget_ms}ms p95 budget " f"for this sync call."
             )
             return winner
     cheaper = a if a.mean_cost_usd < b.mean_cost_usd else b

@@ -12,13 +12,14 @@ Python dataclass to edit.
 import yaml
 
 from .providers.anthropic_provider import AnthropicProvider
+from .providers.base import ModelProvider
 from .providers.gemini_provider import GeminiProvider
-from .providers.openai_provider import OpenAIProvider
 from .providers.grok_provider import GrokProvider
-from .providers.huggingface_provider import HuggingFaceProvider
 from .providers.groq_provider import GroqProvider
+from .providers.huggingface_provider import HuggingFaceProvider
+from .providers.openai_provider import OpenAIProvider
 
-PROVIDER_CLASSES = {
+PROVIDER_CLASSES: dict[str, type[ModelProvider]] = {
     "anthropic": AnthropicProvider,
     "gemini": GeminiProvider,
     "openai": OpenAIProvider,
@@ -34,7 +35,15 @@ PROVIDER_CLASSES = {
 
 
 class ModelSpec:
-    def __init__(self, key, provider_name, model_id, input_per_mtok, output_per_mtok, notes=""):
+    def __init__(
+        self,
+        key: str,
+        provider_name: str,
+        model_id: str,
+        input_per_mtok: float,
+        output_per_mtok: float,
+        notes: str = "",
+    ) -> None:
         self.key = key
         self.provider_name = provider_name
         self.model_id = model_id
@@ -43,33 +52,27 @@ class ModelSpec:
         self.notes = notes
 
     def cost(self, input_tokens: int, output_tokens: int) -> float:
-        return (
-            input_tokens / 1_000_000 * self.input_per_mtok
-            + output_tokens / 1_000_000 * self.output_per_mtok
-        )
+        return input_tokens / 1_000_000 * self.input_per_mtok + output_tokens / 1_000_000 * self.output_per_mtok
 
-    def build_provider(self, api_key: str | None = None):
+    def build_provider(self, api_key: str | None = None) -> ModelProvider:
         cls = PROVIDER_CLASSES.get(self.provider_name)
         if cls is None:
             raise ValueError(
-                f"No provider class registered for '{self.provider_name}'. "
-                f"Known: {list(PROVIDER_CLASSES)}"
+                f"No provider class registered for '{self.provider_name}'. " f"Known: {list(PROVIDER_CLASSES)}"
             )
         return cls(self.model_id, api_key=api_key)
 
 
 class ModelRegistry:
     def __init__(self, config_path: str):
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
-        self._specs = {
-            key: ModelSpec(key=key, **fields) for key, fields in raw["models"].items()
-        }
+        self._specs = {key: ModelSpec(key=key, **fields) for key, fields in raw["models"].items()}
 
     def get(self, key: str) -> ModelSpec:
         if key not in self._specs:
             raise KeyError(f"Unknown model key '{key}'. Known: {list(self._specs)}")
         return self._specs[key]
 
-    def keys(self):
+    def keys(self) -> list[str]:
         return list(self._specs)

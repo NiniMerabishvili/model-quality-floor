@@ -6,13 +6,14 @@ Reads GEMINI_API_KEY from env if no key is passed explicitly.
 import os
 import time
 
-from .base import ModelProvider, GenerationResult
+from .base import GenerationResult, ModelProvider
 
 
 class GeminiProvider(ModelProvider):
     def __init__(self, model_id: str, api_key: str | None = None):
         super().__init__(model_id, api_key)
         import google.generativeai as genai
+
         genai.configure(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
         self._genai = genai
         self._model = genai.GenerativeModel(model_id, system_instruction=None)  # system set per-call below

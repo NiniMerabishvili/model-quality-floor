@@ -4,43 +4,24 @@ OpenAI provider (GPT models). Requires: pip install openai
 This file is here specifically to prove the point: the harness was originally
 written for two vendors, but adding a third took one file, ~30 lines, and zero
 changes anywhere else in the codebase. That's the generalization payoff.
+
+The only OpenAICompatibleProvider subclass that overrides count_tokens() --
+OpenAI is the one vendor here with its own local tokenizer (tiktoken)
+available offline, so its --dry-run estimate doesn't need the shared
+len(text)//4 fallback the other three providers rely on.
 """
 
-import os
-import time
-
-from .base import ModelProvider, GenerationResult
+from .openai_compatible import OpenAICompatibleProvider
 
 
-class OpenAIProvider(ModelProvider):
-    def __init__(self, model_id: str, api_key: str | None = None):
-        super().__init__(model_id, api_key)
-        import openai
-        self._client = openai.OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
-
-    def generate(self, system_prompt: str, user_input: str, max_tokens: int = 1024) -> GenerationResult:
-        start = time.perf_counter()
-        response = self._client.chat.completions.create(
-            model=self.model_id,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_input},
-            ],
-        )
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        return GenerationResult(
-            text=response.choices[0].message.content,
-            input_tokens=response.usage.prompt_tokens,
-            output_tokens=response.usage.completion_tokens,
-            latency_ms=latency_ms,
-            raw_response=None,
-        )
+class OpenAIProvider(OpenAICompatibleProvider):
+    base_url = "https://api.openai.com/v1"
+    env_var = "OPENAI_API_KEY"
 
     def count_tokens(self, text: str) -> int:
         try:
             import tiktoken
+
             enc = tiktoken.encoding_for_model(self.model_id)
             return len(enc.encode(text))
         except Exception:

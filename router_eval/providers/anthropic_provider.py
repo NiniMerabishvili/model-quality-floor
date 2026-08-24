@@ -7,13 +7,14 @@ this key is the user's own, never stored or transmitted anywhere by this tool).
 import os
 import time
 
-from .base import ModelProvider, GenerationResult
+from .base import GenerationResult, ModelProvider
 
 
 class AnthropicProvider(ModelProvider):
     def __init__(self, model_id: str, api_key: str | None = None):
         super().__init__(model_id, api_key)
         import anthropic  # imported lazily so the package is only required if this provider is actually used
+
         self._client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
 
     def generate(self, system_prompt: str, user_input: str, max_tokens: int = 1024) -> GenerationResult:
@@ -29,7 +30,7 @@ class AnthropicProvider(ModelProvider):
         text = "".join(block.text for block in response.content if block.type == "text")
         return GenerationResult(
             text=text,
-            input_tokens=response.usage.input_tokens,   # exact count from the API, not estimated
+            input_tokens=response.usage.input_tokens,  # exact count from the API, not estimated
             output_tokens=response.usage.output_tokens,
             latency_ms=latency_ms,
             raw_response=response.model_dump() if hasattr(response, "model_dump") else None,
