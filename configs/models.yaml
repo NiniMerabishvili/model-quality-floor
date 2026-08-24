@@ -2,7 +2,7 @@
 # Nothing in the Python code needs to change when you do.
 #
 # provider_name must match a key in PROVIDER_CLASSES (model_registry.py):
-# anthropic | gemini | openai   (add more by writing a new providers/*.py file)
+# anthropic | gemini | openai | grok | huggingface | groq   (add more by writing a new providers/*.py file)
 #
 # Prices are per 1M tokens, USD. Source and date them when you update —
 # vendors change these without notice.
@@ -31,17 +31,17 @@ models:
 
   gemini-flash:
     provider_name: gemini
-    model_id: gemini-3-flash
+    model_id: gemini-3-flash-preview
     input_per_mtok: 0.50
     output_per_mtok: 3.00
-    notes: "Checked 2026-08-09."
+    notes: "model_id corrected to the -preview variant, the only one actually live on the API as of 2026-08-10 -- 'gemini-3-flash' (no suffix) returns 404. Checked 2026-08-10."
 
   gemini-pro:
     provider_name: gemini
-    model_id: gemini-3.1-pro
+    model_id: gemini-3.1-pro-preview
     input_per_mtok: 2.00
     output_per_mtok: 12.00
-    notes: "Checked 2026-08-09."
+    notes: "model_id corrected to the -preview variant, same issue as gemini-flash -- 'gemini-3.1-pro' (no suffix) returns 404. Checked 2026-08-10."
 
   gpt-4o-mini:
     provider_name: openai
@@ -49,3 +49,66 @@ models:
     input_per_mtok: 0.15
     output_per_mtok: 0.60
     notes: "Example third vendor — proves the registry isn't hardcoded to two providers."
+
+  grok-4.3:
+    provider_name: grok
+    model_id: grok-4.3
+    input_per_mtok: 1.25
+    output_per_mtok: 2.50
+    notes: "xAI, <200k prompt tokens tier (rate doubles above that). Source: docs.x.ai/developers/pricing. Checked 2026-08-10."
+
+  qwen2.5-7b:
+    provider_name: huggingface
+    model_id: "Qwen/Qwen2.5-7B-Instruct:cheapest"
+    input_per_mtok: 0.30
+    output_per_mtok: 0.30
+    notes: "Via HF Inference Providers router; :cheapest currently resolves to 'together'. Source: router.huggingface.co/v1/models. Checked 2026-08-10."
+
+  llama-3.1-8b:
+    provider_name: huggingface
+    model_id: "meta-llama/Llama-3.1-8B-Instruct"
+    input_per_mtok: 0.02
+    output_per_mtok: 0.05
+    notes: "Via HF Inference Providers router; no routing suffix means HF defaults to its ':fastest' policy, NOT ':cheapest' -- price shown is the cheapest live provider (novita/deepinfra tied) as of the check date, so actual billed cost may differ if a costlier provider is faster at call time. Source: router.huggingface.co/v1/models. Checked 2026-08-10."
+
+  llama-3.3-70b:
+    provider_name: huggingface
+    model_id: "meta-llama/Llama-3.3-70B-Instruct:cheapest"
+    input_per_mtok: 0.135
+    output_per_mtok: 0.40
+    notes: "Via HF Inference Providers router; :cheapest currently resolves to 'novita'. 70B model -- likely heavier/slower than task_triage's 800ms sync latency budget. Source: router.huggingface.co/v1/models. Checked 2026-08-10."
+
+  llama-3.1-8b-groq:
+    provider_name: groq
+    model_id: llama-3.1-8b-instant
+    input_per_mtok: 0.05
+    output_per_mtok: 0.08
+    notes: "Hosted directly on Groq's own LPU hardware, no HF middleman. WARNING: Groq has announced this model ID shuts down 08/16/26 (recommended replacement: openai/gpt-oss-20b) -- confirmed live as of 2026-08-10 but on a ~1 week countdown. Source: console.groq.com/docs/models + /docs/deprecations."
+
+  groq-llama-3.3-70b:
+    provider_name: groq
+    model_id: llama-3.3-70b-versatile
+    input_per_mtok: 0.59
+    output_per_mtok: 0.79
+    notes: "DEAD as of 2026-08-24 -- confirmed via a live client.models.list() call against this project's own Groq key: llama-3.3-70b-versatile is no longer in the returned model list and returns HTTP 404 model_not_found on a real chat.completions.create() call. This is the deprecation that configs/models.yaml had already warned about (shutdown announced for 08/16/26) actually taking effect. Kept in this file as a documented dead entry rather than silently deleted -- use groq-gpt-oss-120b below instead, which is Groq's own recommended live replacement for this tier."
+
+  gpt-oss-20b-groq:
+    provider_name: groq
+    model_id: openai/gpt-oss-20b
+    input_per_mtok: 0.075
+    output_per_mtok: 0.30
+    notes: "Groq's much higher free-tier rate limit (~1K RPM) avoids Gemini free tier's ~15 RPM cap, which the judge role hits hard since it's called once per candidate response. Occasionally returns non-strict JSON as judge output, which crashes judge.py's parser -- swapped for qwen3.6-27b-groq as judge in practice. Source: console.groq.com/docs/models. Checked 2026-08-10."
+
+  qwen3.6-27b-groq:
+    provider_name: groq
+    model_id: qwen/qwen3.6-27b
+    input_per_mtok: 0.60
+    output_per_mtok: 3.00
+    notes: "Preview model on Groq, used as judge for this run to get more reliable strict-JSON rubric output than gpt-oss-20b. Source: console.groq.com/docs/models. Checked 2026-08-10."
+
+  groq-gpt-oss-120b:
+    provider_name: groq
+    model_id: openai/gpt-oss-120b
+    input_per_mtok: 0.15
+    output_per_mtok: 0.60
+    notes: "Live replacement for the now-dead groq-llama-3.3-70b (see that entry) -- this is the 70B-class open-weight tier actually available on Groq today. Confirmed present via client.models.list() and a real chat.completions.create() call against this project's own key on 2026-08-24. Free tier: 30 RPM / 1,000 req/day / 8,000 TPM. Pricing confirmed across multiple independent trackers (computeprices.com, aipricing.guru, llmcosthub.com) as of Aug 2026. Source: console.groq.com/docs/models, console.groq.com/docs/rate-limits."

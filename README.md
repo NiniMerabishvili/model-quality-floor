@@ -7,6 +7,38 @@ holds, proxies, or bills for anyone's API usage, which is also the answer to
 "how do you handle the cost of hosting this for other people" — you don't,
 by design.
 
+## Findings (from a real run)
+
+On the `task_triage` use case, `groq-gpt-oss-120b` (OpenAI's open-weight
+GPT-OSS-120B, served on Groq's LPU hardware) was recommended over
+`gemini-flash-lite` — but calling it a "win" undersells what actually
+decided it. `gemini-flash-lite` was **disqualified**: its
+`classification_accuracy` scored 3.78 against this use case's 4.0 quality
+floor, while `groq-gpt-oss-120b` cleared it at 4.89 (mean quality across all
+criteria: 4.96 vs 4.59). The decision engine's own reasoning trace says it
+directly: `groq-gpt-oss-120b` was "selected by elimination," not because it
+swept every metric.
+
+This run originally targeted three models across three vendors, and that
+scope shrank twice for reasons worth stating plainly rather than glossing
+over. `claude-haiku-4.5` never ran — the Anthropic API key in `.env`
+returned a 401 authentication error, an infrastructure problem, not a
+quality signal, so Claude is absent from this comparison entirely. Separately,
+the originally planned Groq model (`llama-3.3-70b-versatile`) turned out to
+already be dead — Groq's own previously-documented deprecation warning had
+taken effect — so the run used `openai/gpt-oss-120b` on Groq instead, the
+vendor's own recommended replacement, confirmed live before spending anything
+on it. The honest limitation: this comparison rests on 3 trials per model,
+the harness's adaptive-stopping minimum, and only two vendors instead of the
+intended three — a real, reportable disqualification, not a null result, but
+a thin sample that shouldn't be read as a durable ranking.
+
+Groq was added as a third provider (`router_eval/providers/groq_provider.py`)
+specifically to prove the `ModelProvider` interface generalizes to an
+open-weight model served by a third vendor, not just Anthropic and Google —
+and it ran this entire comparison at $0 additional cost, since both Groq
+calls stayed inside its free tier's rate limits.
+
 ## What changed from v1
 
 | | v1 (Freeside-specific) | v2 (generalized) |
@@ -27,6 +59,10 @@ elsewhere changes. `providers/openai_provider.py` exists specifically to
 prove this — it was the third vendor added, and it took about 30 lines.
 
 ## Running it
+
+Set your keys either as real shell env vars, or by copying `.env.example` to
+`.env` and filling it in — `cli.py` loads `.env` automatically on startup
+(via `python-dotenv`) if present; actual shell env vars still take precedence.
 
 ```bash
 pip install -r requirements.txt

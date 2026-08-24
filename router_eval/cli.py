@@ -31,10 +31,19 @@ import json
 import os
 import statistics
 
+from dotenv import load_dotenv
+
 from .model_registry import ModelRegistry
 from .use_case_loader import load_use_cases
 from .harness import run_use_case_adaptive, aggregate
 from .decision_engine import recommend
+
+# Loads ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY from a .env file
+# in the current working directory (if present) into the process environment,
+# so providers' os.environ.get(...) lookups see them. A no-op if .env doesn't
+# exist or a variable is already set in the shell -- real shell env vars still
+# take precedence over .env by default.
+load_dotenv()
 
 
 def build_model_call_fn(provider):
@@ -125,7 +134,7 @@ def main():
         print(f"{uc_key}: {trials} trials/model, recommendation = {rec.winner} ({rec.confidence})")
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, "w") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write(render_report(all_recs, all_aggs, use_cases, spent[0]))
     print(f"\nTotal spend: ${spent[0]:.4f}")
     print(f"Report written to {args.out}")

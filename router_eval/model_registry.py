@@ -14,12 +14,19 @@ import yaml
 from .providers.anthropic_provider import AnthropicProvider
 from .providers.gemini_provider import GeminiProvider
 from .providers.openai_provider import OpenAIProvider
+from .providers.grok_provider import GrokProvider
+from .providers.huggingface_provider import HuggingFaceProvider
+from .providers.groq_provider import GroqProvider
 
 PROVIDER_CLASSES = {
     "anthropic": AnthropicProvider,
     "gemini": GeminiProvider,
     "openai": OpenAIProvider,
-    # Adding a 4th vendor (e.g. Mistral, a self-hosted Llama endpoint) means:
+    "grok": GrokProvider,
+    "huggingface": HuggingFaceProvider,
+    "groq": GroqProvider,
+    # Adding another vendor (e.g. Mistral's own API, a self-hosted Llama
+    # endpoint) means:
     # 1. write providers/mistral_provider.py implementing ModelProvider
     # 2. add one line here
     # Nothing else in this file, or in harness.py/decision_engine.py, changes.
