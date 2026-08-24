@@ -107,3 +107,6 @@ defensible tool), not a workaround.
 - Token counts for `--dry-run` come from each provider's own tokenizer where
   available; output length is still a rough placeholder since it can't be
   known before the call happens.
+
+
+By Nini Merabishvili
